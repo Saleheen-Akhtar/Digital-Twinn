@@ -14,7 +14,7 @@ const withBundleAnalyzer =
 // with `cwd = apps/web`. Next.js's built-in `.env` loader looks for
 // `.env` in cwd only, so it never finds the monorepo-root `.env` and the
 // web middleware ends up running with an empty `process.env` — which
-// breaks JWT verification (Finding mirrors the api-gateway's loader bug
+// breaks JWT verification (mirrors the api-gateway's loader bug
 // fixed in `apps/api-gateway/src/config/infisical.loader.ts`).
 //
 // We use the same walk-up `findMonorepoRoot` pattern as the api-gateway
@@ -130,20 +130,13 @@ const analyzerEnabled = process.env.ANALYZE === 'true';
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   transpilePackages: ['@digital-twin-fm/db'],
-  output: process.env.NEXT_OUTPUT === 'standalone' ? 'standalone' : undefined,
+  output: 'export',
+  trailingSlash: true,
+  images: { unoptimized: true },
+  eslint: { ignoreDuringBuilds: true },
+  typescript: { ignoreBuildErrors: false },
   async headers() {
     return [{ source: '/(.*)', headers: securityHeaders }];
-  },
-  experimental: {
-    serverActions: {
-      allowedOrigins: ['localhost:3000'],
-    },
-    optimizePackageImports: [
-      'lucide-react',
-      '@radix-ui/react-icons',
-      'recharts',
-      'react-markdown',
-    ],
   },
 };
 

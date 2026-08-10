@@ -1,16 +1,13 @@
-import { getServerEnv } from '@/env';
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
-  createApiClient,
-  type Alert,
-  type Asset,
-  type Building,
-  type BuildingSnapshot,
-  type Sensor,
-  type SensorReading,
-  type SnapshotHistoryEntry,
-  type WorkOrder,
-} from '@/lib/api-client';
-import { requireSession } from '@/lib/session';
+  createBrowserApiClient,
+  type BrowserApiClient,
+} from '@/lib/browser-api-client';
+import { getSession } from '@/lib/session-store';
+import type { Asset, Sensor, Alert, WorkOrder, SensorReading, Building, BuildingSnapshot, SnapshotHistoryEntry } from '@/lib/api-client';
 import { DashboardAlertActions } from './dashboard-alert-actions';
 import { DashboardLiveMonitoring } from './dashboard-live-monitoring';
 import { DashboardMetricsLive } from './dashboard-metrics-live';
@@ -29,17 +26,14 @@ import { LiveIndicator } from './live-indicator';
 import { DemoControls } from './demo-controls';
 import { DashboardGreeting } from './dashboard-greeting';
 
-export const metadata = { title: 'Dashboard - Digital Twin FM' };
-export const dynamic = 'force-dynamic';
-
 type ConnectionState = 'connected' | 'partial' | 'disconnected';
 type SourceState = { status: 'ok'; count: number } | { status: 'error'; code: string; message: string };
 type PanelSourceId = 'buildings' | 'assets' | 'sensors' | 'alerts' | 'workOrders' | 'snapshot';
 
 type DashboardData = {
   building: Building | null;
-  snapshot: BuildingSnapshot | null;
-  history: SnapshotHistoryEntry[];
+    snapshot: BuildingSnapshot | null;
+    history: SnapshotHistoryEntry[];
   assets: Asset[];
   sensors: Sensor[];
   alerts: Alert[];
@@ -59,11 +53,11 @@ function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
 }
 
 async function loadSensorReadings(
-  api: ReturnType<typeof createApiClient>,
+  api: BrowserApiClient,
   sensors: Sensor[],
 ): Promise<Map<string, SensorReading[]>> {
   const chartTypes = ['temperature', 'humidity', 'power', 'co2', 'occupancy'];
-  const chartSensors = sensors.filter((s) => chartTypes.includes(s.type));
+  const chartSensors = sensors.filter((s) => chartTypes.includes(s.type ?? ''));
   const entries = await Promise.all(
     chartSensors.map(async (sensor) => {
       try {
@@ -77,7 +71,7 @@ async function loadSensorReadings(
   return new Map(entries);
 }
 
-async function loadDashboardData(api: ReturnType<typeof createApiClient>): Promise<LoadResult> {
+async function loadDashboardData(api: BrowserApiClient): Promise<LoadResult> {
   const sources: Partial<Record<PanelSourceId, SourceState>> = {};
   let failedCount = 0;
 
@@ -98,20 +92,20 @@ async function loadDashboardData(api: ReturnType<typeof createApiClient>): Promi
           message: buildingRes.reason?.message ?? 'Failed to load building',
         });
 
-  const buildingId = building?.id;
+  const buildingId = (building as { id?: string } | null)?.id;
 
   const [snapshotRes, historyRes, assetsRes, sensorsRes, alertsRes, workOrdersRes] =
     await Promise.allSettled([
       buildingId
-        ? api.findBuildingSnapshot(buildingId)
-        : Promise.resolve({ found: false as const }),
+              ? api.findBuildingSnapshot(buildingId)
+              : Promise.resolve({ found: false as const, snapshot: null as null }),
       buildingId
         ? api.findBuildingSnapshotHistory(buildingId, 24)
-        : Promise.resolve({ history: [] as SnapshotHistoryEntry[] }),
-      api.findAssets(buildingId ? { buildingId } : {}),
-      api.findSensors(),
-      api.findAlerts(),
-      api.findWorkOrders(),
+        : Promise.resolve({ history: [] }),
+      Promise.resolve().then(() => api.findAssets(buildingId ? { buildingId } : {})),
+      Promise.resolve().then(() => api.findSensors()),
+      Promise.resolve().then(() => api.findAlerts()),
+      Promise.resolve().then(() => api.findWorkOrders()),
     ]);
 
   sources.snapshot =
@@ -166,8 +160,8 @@ async function loadDashboardData(api: ReturnType<typeof createApiClient>): Promi
         ? 'disconnected'
         : 'partial';
 
-  const snapshotPayload = settledValue(snapshotRes, { found: false as const });
-  const snapshot = snapshotPayload.found ? snapshotPayload.snapshot ?? null : null;
+  const snapshotPayload = settledValue(snapshotRes, { found: false as const, snapshot: null as null });
+  const snapshot = snapshotPayload.found ? (snapshotPayload.snapshot ?? null) : null;
   const history = settledValue(historyRes, { history: [] }).history;
   const assets = settledValue(assetsRes, []);
   const sensors = settledValue(sensorsRes, []);
@@ -192,11 +186,39 @@ async function loadDashboardData(api: ReturnType<typeof createApiClient>): Promi
   };
 }
 
-export default async function DashboardPage() {
-  const session = await requireSession();
-  const { apiGatewayUrl } = getServerEnv();
-  const api = createApiClient({ baseUrl: apiGatewayUrl, token: session.accessToken });
-  const { data, sources, connection, failedCount } = await loadDashboardData(api);
+export default function DashboardPage() {
+  const router = useRouter();
+  const [load, setLoad] = useState<LoadResult | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!getSession()) {
+      router.replace('/login/');
+      return;
+    }
+    const api = createBrowserApiClient();
+    loadDashboardData(api)
+      .then(setLoad)
+      .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load dashboard'));
+  }, [router]);
+
+  if (!getSession()) return null; // redirecting
+  if (loadError) {
+    return (
+      <div className="p-8 text-center">
+        <p className="text-red-600 font-semibold">Failed to load dashboard: {loadError}</p>
+      </div>
+    );
+  }
+  if (!load) {
+    return (
+      <div className="flex-1 px-6 py-10 text-center text-slate-500 animate-pulse">
+        Loading dashboard…
+      </div>
+    );
+  }
+
+  const { data, sources, connection, failedCount } = load;
 
   const levels: LevelRow[] = buildFloorLevels(data.assets);
   const openAlerts = data.alerts.filter(isOpenAlert);
@@ -209,10 +231,12 @@ export default async function DashboardPage() {
   });
   const liveCharts = buildLiveCharts(data.sensors, data.readingsBySensorId);
   const assetReadingsById = buildAssetReadingsMap(data.sensors);
-  const buildingId = data.building?.id ?? '';
+  const buildingId = (data.building as { id?: string } | null)?.id ?? '';
   const istTime = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Kolkata"}));
   const greeting = greetingForHour(istTime.getHours());
-  const userName = session.displayName && session.displayName !== "User" ? session.displayName : displayNameFromEmail(session.email);
+  const session = getSession();
+  const userName =
+    session?.name && session.name !== 'User' ? session.name : displayNameFromEmail(session?.email ?? '');
 
   const sensorsError =
     sources.sensors.status === 'error'

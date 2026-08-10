@@ -4,33 +4,30 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createBrowserApiClient } from '@/lib/browser-api-client';
-import { ApiError } from '@/lib/api-client';
 
-export function LoginForm() {
+export function RegisterForm() {
   const router = useRouter();
-  const [step, setStep] = useState<'email' | 'otp'>('email');
+  const [step, setStep] = useState<'details' | 'otp'>('details');
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [mobile, setMobile] = useState('');
   const [otp, setOtp] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
-  async function requestCode(e: React.FormEvent) {
+  async function createAccount(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setInfo(null);
     setPending(true);
     try {
       const api = createBrowserApiClient();
-      const res = await api.requestOtp(email.trim());
+      const res = await api.register({ email: email.trim(), name: name.trim(), mobile: mobile.trim() });
       setInfo(res.message ?? (res.requiresOTP ? 'OTP sent to your email.' : 'Check your email for the code.'));
       setStep('otp');
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'not_found') {
-        setError('No account with this email. Create one below.');
-      } else {
-        setError(err instanceof Error ? err.message : 'Failed to send the code.');
-      }
+      setError(err instanceof Error ? err.message : 'Registration failed.');
     } finally {
       setPending(false);
     }
@@ -87,26 +84,38 @@ export function LoginForm() {
         <button
           type="button"
           onClick={() => {
-            setStep('email');
+            setStep('details');
             setError(null);
             setInfo(null);
             setOtp('');
           }}
           className="text-xs font-bold uppercase tracking-widest text-gray-500 underline"
         >
-          ← Use a different email
+          ← Edit details
         </button>
       </form>
     );
   }
 
   return (
-    <form onSubmit={requestCode} className="flex flex-col gap-6 w-full">
+    <form onSubmit={createAccount} className="flex flex-col gap-6 w-full">
       {error && (
         <div role="alert" className="text-white bg-red-600 brutalist-border p-3 text-sm font-bold uppercase tracking-widest text-center shadow-[4px_4px_0px_#111]">
           {error}
         </div>
       )}
+      <label className="flex flex-col gap-2">
+        <span className="text-sm font-black uppercase tracking-widest text-black">Full Name</span>
+        <input
+          name="name"
+          type="text"
+          required
+          autoComplete="name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="brutalist-border px-4 py-3 bg-white text-black focus:outline-none focus:ring-4 focus:ring-gray-200 transition-all font-medium"
+        />
+      </label>
       <label className="flex flex-col gap-2">
         <span className="text-sm font-black uppercase tracking-widest text-black">Email</span>
         <input
@@ -119,22 +128,28 @@ export function LoginForm() {
           className="brutalist-border px-4 py-3 bg-white text-black focus:outline-none focus:ring-4 focus:ring-gray-200 transition-all font-medium"
         />
       </label>
+      <label className="flex flex-col gap-2">
+        <span className="text-sm font-black uppercase tracking-widest text-black">
+          Mobile <span className="text-gray-400 normal-case">(optional)</span>
+        </span>
+        <input
+          name="mobile"
+          type="tel"
+          autoComplete="tel"
+          value={mobile}
+          onChange={(e) => setMobile(e.target.value)}
+          className="brutalist-border px-4 py-3 bg-white text-black focus:outline-none focus:ring-4 focus:ring-gray-200 transition-all font-medium"
+        />
+      </label>
       <button type="submit" disabled={pending} className="btn-brutalist w-full py-4 text-base mt-2">
-        {pending ? 'Sending code…' : 'Send code'}
+        {pending ? 'Creating account…' : 'Create account & send code'}
       </button>
-
       <p className="text-center text-xs font-bold uppercase tracking-widest text-gray-500">
-        No account?{' '}
-        <Link href="/register/" className="underline">
-          Register
+        Already registered?{' '}
+        <Link href="/login/" className="underline">
+          Sign in
         </Link>
       </p>
-
-      {/* Demo helper */}
-      <div className="mt-4 pt-6 brutalist-border-t border-dashed text-center">
-        <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-2">Demo</p>
-        <p className="text-sm font-mono font-medium text-black">Enter any email — the OTP arrives via email (n8n).</p>
-      </div>
     </form>
   );
 }
