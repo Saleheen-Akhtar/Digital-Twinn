@@ -24,7 +24,7 @@
     "licenses:report": "pnpm dlx license-checker --production --csv --out public/licenses.csv"
   },
   "devDependencies": {
-    "turbo": "^2.0.0",
+    "turbo": "^2.10.9",
     "license-checker": "^25.0.1"
   },
   "engines": {

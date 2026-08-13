@@ -19,17 +19,17 @@
   },
   "dependencies": {
     "@digital-twin-fm/types": "workspace:*",
-    "argon2": "^0.44.0",
-    "drizzle-orm": "^0.30.0",
+    "argon2": "^0.45.1",
+    "drizzle-orm": "^0.45.2",
     "ioredis": "^5.11.1",
-    "pg": "^8.11.0"
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@faker-js/faker": "^9.0.0",
-    "@types/pg": "^8.10.9",
-    "drizzle-kit": "^0.20.0",
+    "@types/pg": "^8.21.0",
+    "drizzle-kit": "^0.31.10",
     "eslint": "^8.57.0",
-    "tsx": "^4.0.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.3.3"
   }
 }
