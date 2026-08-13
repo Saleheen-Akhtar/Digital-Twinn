@@ -1,28 +1,72 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { LoginForm } from './login-form';
 
-// Mock the server action so the form is renderable in jsdom (Next.js
-// `useActionState` would otherwise try to import the real server action
-// which references `next/headers`).
-jest.mock('./actions', () => ({
-  loginAction: jest.fn().mockResolvedValue({ error: null }),
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({ push: jest.fn(), replace: jest.fn(), refresh: jest.fn(), prefetch: jest.fn(), back: jest.fn(), forward: jest.fn() }),
 }));
 
-describe('LoginForm', () => {
-  it('renders email and password fields', () => {
-    render(<LoginForm />);
-    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument();
+const requestOtp = jest.fn();
+const verifyOtp = jest.fn();
+const routerMock = { push: jest.fn(), replace: jest.fn(), refresh: jest.fn(), prefetch: jest.fn(), back: jest.fn(), forward: jest.fn() };
+
+jest.mock('next/navigation', () => ({
+  useRouter: () => routerMock,
+}));
+
+jest.mock('@/lib/browser-api-client', () => ({
+  createBrowserApiClient: () => ({ requestOtp, verifyOtp }),
+}));
+
+describe('LoginForm (serverless OTP)', () => {
+  beforeEach(() => {
+    requestOtp.mockReset();
+    verifyOtp.mockReset();
   });
 
-  it('uses the form `action` attribute to bind to the server action', () => {
-    const { container } = render(<LoginForm />);
-    const form = container.querySelector('form');
-    // Server actions render with an action handler attached; the form
-    // element is what carries it. We assert the form is present and
-    // can be submitted (no onSubmit handler in client code).
-    expect(form).toBeInTheDocument();
-    expect(form).not.toHaveAttribute('onsubmit');
+  it('starts on the email step', () => {
+    render(<LoginForm />);
+    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /send code/i })).toBeInTheDocument();
+  });
+
+  it('moves to the OTP step after requesting a code', async () => {
+    requestOtp.mockResolvedValue({ requiresOTP: true, message: 'OTP sent to your email.' });
+    render(<LoginForm />);
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'user@dtfm.test' } });
+    fireEvent.click(screen.getByRole('button', { name: /send code/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/one-time code sent/i)).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText(/otp code/i)).toBeInTheDocument();
+  });
+
+  it('verifies the OTP and completes sign-in', async () => {
+    requestOtp.mockResolvedValue({ requiresOTP: true });
+    verifyOtp.mockResolvedValue({ token: 't', email: 'user@dtfm.test' });
+
+    render(<LoginForm />);
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'user@dtfm.test' } });
+    fireEvent.click(screen.getByRole('button', { name: /send code/i }));
+    await waitFor(() => expect(screen.getByLabelText(/otp code/i)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText(/otp code/i), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: /verify & sign in/i }));
+    await waitFor(() => {
+      expect(verifyOtp).toHaveBeenCalledWith('user@dtfm.test', '123456');
+      expect(routerMock.replace).toHaveBeenCalledWith('/dashboard/');
+    });
+  });
+
+  it('shows an error when the OTP is wrong', async () => {
+    requestOtp.mockResolvedValue({ requiresOTP: true });
+    verifyOtp.mockRejectedValue(new Error('Invalid OTP or expired code'));
+    render(<LoginForm />);
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'user@dtfm.test' } });
+    fireEvent.click(screen.getByRole('button', { name: /send code/i }));
+    await waitFor(() => expect(screen.getByLabelText(/otp code/i)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText(/otp code/i), { target: { value: '000000' } });
+    fireEvent.click(screen.getByRole('button', { name: /verify & sign in/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Invalid OTP/);
+    });
   });
 });

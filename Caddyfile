@@ -14,10 +14,13 @@
 # reaches it (http://ai:8000 over the internal Docker network).
 
 dtfm.your-domain.com {
-    # API gateway (REST + WebSocket upgrades)
-    reverse_proxy /api/* api-gateway:4000
-    reverse_proxy /ws/*  api-gateway:4000
+    # Socket.IO realtime gateway → api-gateway. The browser connects via
+    # socket.io (namespace /realtime, HTTP handshake at /socket.io), which
+    # must reach the gateway, NOT the web app.
+    reverse_proxy /socket.io/* api-gateway:4000
 
-    # Everything else → Next.js web app
+    # Everything else — including the web app's own /api handlers
+    # (/api/proxy, /api/auth/*) and the Next.js UI — goes to the web app,
+    # which forwards REST to the api-gateway server-side.
     reverse_proxy web:3000
 }

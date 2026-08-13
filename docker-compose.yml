@@ -131,6 +131,7 @@ services:
       dockerfile: docker/web.Dockerfile
       args:
         NEXT_OUTPUT: standalone
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
     image: dtfm-web
     container_name: dtfm-web
     restart: unless-stopped

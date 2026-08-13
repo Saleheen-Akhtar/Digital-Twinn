@@ -1,29 +1,21 @@
 /**
- * Browser-side API client.
+ * Browser-side API client — STATIC SPA build.
  *
- * Thin fetch wrapper for the Next.js Route Handler at `/api/proxy/...`,
- * which forwards the request to the api-gateway with the Bearer token
- * read from the httpOnly `dtfm_token` cookie server-side. The browser
- * NEVER sees the token; it just talks same-origin to `/api/proxy/...`
- * and lets the cookie ride along automatically.
+ * Talks DIRECTLY to the serverless API Gateway (AWS) with the opaque
+ * session token from `session-store` as `Authorization: Bearer <token>`.
+ * No /api/proxy, no cookies, no middleware — all of that gone in the
+ * static export.
  *
- * This is the client-side counterpart to `@/lib/api-client` (which is
- * used by Server Components / Server Actions and accepts a token
- * directly). The two share the same `ApiError` shape and the same
- * method names so callers can be moved between server and client
- * contexts with minimal changes.
- *
- * Why a proxy instead of direct browser → api-gateway:
- *   - The api-gateway's JwtAuthGuard only reads the JWT from the
- *     `Authorization: Bearer` header. The browser can't read the
- *     httpOnly cookie to set that header.
- *   - Direct browser → api-gateway would also need CORS with
- *     `credentials: true`, which is a wider attack surface.
- *   - The proxy keeps the api-gateway's auth boundary unchanged.
+ * Method surface mirrors the old server-side `createApiClient` so pages
+ * (dashboard, twin, alerts, …) work unchanged. Routes the serverless
+ * stack doesn't implement (/alerts, /sensors, /work-orders,
+ * /building/snapshot) resolve to 404 → ApiError('not_found'), which
+ * pages already treat as a degraded-but-graceful state.
  */
+import { getClientEnv } from '@/env';
 import { ApiError, type ApiErrorCode } from './api-client';
-
-const PROXY_PREFIX = '/api/proxy';
+import type { Building, Asset, Sensor, SensorReading, Alert, WorkOrder } from './api-client';
+import { getToken, setSession, clearSession, type SessionData } from './session-store';
 
 function codeForStatus(status: number): { code: ApiErrorCode; message: string } {
   if (status === 0 || status === 502 || status === 503 || status === 504) {
@@ -37,32 +29,60 @@ function codeForStatus(status: number): { code: ApiErrorCode; message: string } 
   return { code: 'upstream_error', message: 'The service returned an error. Please try again.' };
 }
 
+function unwrap<T>(body: unknown, key: string): T {
+  if (body && typeof body === 'object' && key in (body as Record<string, unknown>)) {
+    return (body as Record<string, T>)[key];
+  }
+  return body as T;
+}
+
+/**
+ * The serverless data API wraps collections in a key (`{assets:[…]}`,
+ * `{buildings:[…]}`). The old api-gateway returned bare arrays.
+ * Auto-unwrap the first array-valued key so page callers keep working.
+ */
+function unwrapAnyArray(body: unknown): unknown {
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    const obj = body as Record<string, unknown>;
+    for (const key of ['assets', 'buildings', 'readings', 'files', 'alerts', 'sensors', 'workOrders']) {
+      if (Array.isArray(obj[key])) return obj[key];
+    }
+  }
+  return body;
+}
+
+function buildUrl(path: string): string {
+  const base = getClientEnv().apiBaseUrl.replace(/\/$/, '');
+  // Auth + AI routes live at the gateway ROOT; data routes at /api/*.
+  if (path.startsWith('/auth/') || path === '/auth') return `${base}${path}`;
+  return `${base}/api${path.startsWith('/') ? path : `/${path}`}`;
+}
+
 export interface BrowserApiClientOptions {
-  /** Optional `credentials` policy. Defaults to `'same-origin'`, which
-   *  is the right value for our same-origin `/api/proxy` calls. The
-   *  cookie rides along automatically. */
-  credentials?: RequestCredentials;
-  /** Optional AbortSignal forwarded to fetch. */
   signal?: AbortSignal;
 }
 
 export function createBrowserApiClient(opts: BrowserApiClientOptions = {}) {
-  const credentials = opts.credentials ?? 'same-origin';
-
-  async function call<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T> {
-
-    const url = `${PROXY_PREFIX}${path.startsWith('/') ? path : `/${path}`}`;
+  async function call<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+    unwrapKey?: string,
+  ): Promise<T> {
     const init: RequestInit = {
       method,
-      credentials,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json' } as Record<string, string>,
     };
+    const token = getToken();
+    if (token) {
+      (init.headers as Record<string, string>)['authorization'] = `Bearer ${token}`;
+    }
     if (opts.signal) init.signal = opts.signal;
     if (body !== undefined) init.body = JSON.stringify(body);
 
     let res: Response;
     try {
-      res = await fetch(url, init);
+      res = await fetch(buildUrl(path), init);
     } catch (e) {
       throw new ApiError('network_unavailable', 0, 'The service is temporarily unreachable.', e);
     }
@@ -77,16 +97,118 @@ export function createBrowserApiClient(opts: BrowserApiClientOptions = {}) {
       const { code, message } = codeForStatus(res.status);
       // eslint-disable-next-line no-console
       console.error(`[browser-api] ${res.status} ${code} on ${method} ${path}:`, upstreamBody);
+      if (code === 'unauthorized') clearSession();
       throw new ApiError(code, res.status, message, upstreamBody);
     }
 
-    // Some proxied endpoints may return 204; guard the JSON parse.
     const text = await res.text();
     if (!text) return undefined as T;
-    return JSON.parse(text) as T;
+    const parsed = JSON.parse(text);
+    if (unwrapKey) return unwrap<T>(parsed, unwrapKey);
+    return unwrapAnyArray(parsed) as T;
+  }
+
+  function qs(params: Record<string, string | number | undefined | null>): string {
+    const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '');
+    if (!entries.length) return '';
+    return '?' + entries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&');
   }
 
   return {
+    // ───── Serverless auth (OTP flow, gateway root — NOT under /api) ─────
+    requestOtp: (email: string) =>
+      call<{ message?: string; requiresOTP?: boolean }>('POST', '/auth/login', { email }),
+    register: (input: { email: string; name: string; mobile?: string }) =>
+      call<{ message?: string; requiresOTP?: boolean }>('POST', '/auth/register', input),
+    verifyOtp: async (email: string, otp: string): Promise<SessionData> => {
+      const body = await call<{ token: string; user?: { email?: string; name?: string } }>(
+        'POST',
+        '/auth/verify',
+        { email, otp },
+      );
+      const session: SessionData = {
+        token: body.token,
+        email: body.user?.email ?? email,
+        name: body.user?.name,
+      };
+      setSession(session);
+      return session;
+    },
+    clearSession,
+
+    // ───── Buildings (serverless: GET /api/buildings → {buildings:[…]}) ─────
+    findBuildings: () => call<Building[]>('GET', '/buildings', undefined, 'buildings'),
+    findBuilding: (id: string): Promise<Building> => call<Building>('GET', `/buildings/${id}`),
+    findBuildingFloors: (..._args: unknown[]): Promise<unknown[]> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+    updateZone: (..._args: unknown[]): Promise<unknown> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+    findBuildingSnapshot: (..._args: unknown[]): Promise<{ found: false; snapshot: null; message: string }> =>
+      Promise.resolve({ found: false, snapshot: null, message: 'Snapshots are server-only in the serverless build.' }),
+    findBuildingSnapshotHistory: (..._args: unknown[]) => Promise.resolve({ history: [] }),
+
+    // ───── Assets (serverless: GET /api/assets → {assets:[…]}) ─────
+    findAssets: (filter: Record<string, unknown> = {}): Promise<Asset[]> =>
+      call<Asset[]>(
+        'GET',
+        `/assets${qs(filter as Record<string, string | number | undefined | null>)}`,
+        undefined,
+        'assets',
+      ),
+    findAsset: (id: string): Promise<Asset> => call<Asset>('GET', `/assets/${id}`),
+
+    // ───── Sensors / readings — not exposed by the serverless stack ─────
+    findSensors: (..._args: unknown[]): Promise<Sensor[]> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+    findSensor: (..._args: unknown[]): Promise<Sensor> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+    findReadings: (..._args: unknown[]): Promise<SensorReading[]> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+
+    // ───── Alerts / work orders — not exposed by the serverless stack ─────
+    findAlerts: (..._args: unknown[]): Promise<Alert[]> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+    findAlert: (..._args: unknown[]): Promise<Alert> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+    acknowledgeAlert: (..._args: unknown[]): Promise<unknown> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+    resolveAlert: (..._args: unknown[]): Promise<unknown> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+    findWorkOrders: (..._args: unknown[]): Promise<WorkOrder[]> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+    createWorkOrder: (..._args: unknown[]): Promise<unknown> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+    updateWorkOrder: (..._args: unknown[]): Promise<unknown> => {
+      const err = new ApiError('not_found', 404, 'The requested resource was not found.');
+      return Promise.reject(err);
+    },
+
+    // ───── Profile (serverless: GET /api/me) ─────
+    me: () => call<{ email: string; name?: string; created_at?: string }>('GET', '/me'),
+
+    // ───── Generic verb surface (kept for page callers) ─────
     get: <T>(path: string) => call<T>('GET', path),
     post: <T>(path: string, body?: unknown) => call<T>('POST', path, body),
     put: <T>(path: string, body?: unknown) => call<T>('PUT', path, body),

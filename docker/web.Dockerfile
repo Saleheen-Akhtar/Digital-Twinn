@@ -14,6 +14,12 @@ WORKDIR /app
 COPY . .
 RUN pnpm install -r --offline
 ENV NEXT_OUTPUT=standalone
+# NEXT_PUBLIC_* vars are inlined into the client bundle at BUILD time, so
+# they can't be set at runtime via `environment:`. Value comes from the
+# compose build-arg below (defaults to the dev gateway); the production
+# deploy sets NEXT_PUBLIC_API_URL in .env (e.g. https://dt.example.com).
+ARG NEXT_PUBLIC_API_URL=http://localhost:4000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN pnpm --filter @digital-twin-fm/web run build
 
 # ── runner: minimal production image ───────────────────────────

@@ -16,7 +16,7 @@ updates:
       patch-and-minor:
         update-types: ["minor", "patch"]
       major-and-security:
-        update-types: ["major", "version-update:semver-major"]
+        update-types: ["major"]
     labels:
       - "dependencies"
       - "security"
