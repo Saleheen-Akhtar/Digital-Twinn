@@ -11,9 +11,9 @@
     "build": "tsc --noEmit && echo 'types: source-only, no build artifact needed'"
   },
   "devDependencies": {
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
-    "eslint": "^8.57.0",
-    "typescript": "^5.3.3"
+    "@typescript-eslint/eslint-plugin": "^8.66.0",
+    "@typescript-eslint/parser": "^8.66.0",
+    "eslint": "^10.8.1",
+    "typescript": "^7.0.2"
   }
 }
